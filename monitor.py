@@ -103,8 +103,8 @@ def fetch_feed() -> list[dict]:
     return items
 
 
-def classify(title: str, snippet: str) -> dict | None:
-    """Classify article using keyword matching (no LLM needed)."""
+def keyword_filter(title: str, snippet: str) -> bool:
+    """Fast keyword-based pre-filter to reduce LLM calls."""
     text = f"{title} {snippet}".lower()
     
     # Positive signals - shipping resuming or becoming safe
@@ -120,33 +120,61 @@ def classify(title: str, snippet: str) -> dict | None:
         "transiting safely"
     ]
     
-    # Negative signals - ignore these
-    negative_keywords = [
-        "plan to", "planning", "hopes to", "hoping",
-        "may resume", "might resume", "could resume",
-        "historical", "previously", "in the past",
-        "seeks", "seeking", "urges", "calls for",
-        "trapped", "stuck", "blocked", "waiting"
-    ]
-    
-    # Check for positive signals
+    # Must have at least one positive keyword to be worth LLM analysis
     has_positive = any(keyword in text for keyword in positive_keywords)
+    return has_positive
+
+
+def classify_with_llm(title: str, snippet: str) -> dict | None:
+    """Use local Ollama model for classification."""
+    import requests
     
-    # Check for negative signals
-    has_negative = any(keyword in text for keyword in negative_keywords)
+    prompt = CLASSIFICATION_PROMPT.format(title=title, snippet=snippet)
     
-    # Relevant if positive signal and no negative signal
-    relevant = has_positive and not has_negative
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "llama3.2:3b",  # Use your local 8b model
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,  # Low temperature for consistent output
+                }
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        result_text = response.json()["response"].strip()
+        
+        # Extract JSON from response
+        if "```json" in result_text:
+            result_text = result_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_text:
+            result_text = result_text.split("```")[1].split("```")[0].strip()
+        
+        return json.loads(result_text)
+    except Exception as e:
+        print(f"[LLM] Error calling Ollama: {e}")
+        # Fallback to simple classification
+        return {
+            "relevant": True,  # If keyword matched, assume relevant
+            "summary": "Potential shipping resumption (LLM unavailable)"
+        }
+
+
+def classify(title: str, snippet: str) -> dict | None:
+    """Two-stage classification: keyword filter + LLM."""
+    # Stage 1: Quick keyword filter
+    if not keyword_filter(title, snippet):
+        return {
+            "relevant": False,
+            "summary": "No positive keywords found"
+        }
     
-    if relevant:
-        summary = "Article suggests shipping may have resumed or become safer through the strait"
-    else:
-        summary = "Article appears to be about negotiations, plans, or speculation rather than actual resumption"
-    
-    return {
-        "relevant": relevant,
-        "summary": summary
-    }
+    # Stage 2: LLM classification for candidates
+    print(f"[Classify] Keyword match - sending to LLM for analysis...")
+    return classify_with_llm(title, snippet)
 
 
 def send_telegram(message: str) -> None:
