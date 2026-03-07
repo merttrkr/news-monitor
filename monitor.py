@@ -2,7 +2,10 @@ import os
 import json
 import feedparser
 import requests
-import google.generativeai as genai
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -19,7 +22,6 @@ RSS_URL = (
 
 SEEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen_articles.json")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -102,27 +104,55 @@ def fetch_feed() -> list[dict]:
 
 
 def classify(title: str, snippet: str) -> dict | None:
-    """Ask Gemini whether the article signals shipping resumption."""
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
-    prompt = CLASSIFICATION_PROMPT.format(title=title, snippet=snippet)
-    response = model.generate_content(prompt)
-
-    text = response.text.strip()
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3].strip()
-
-    return json.loads(text)
+    """Classify article using keyword matching (no LLM needed)."""
+    text = f"{title} {snippet}".lower()
+    
+    # Positive signals - shipping resuming or becoming safe
+    positive_keywords = [
+        "resume", "resumed", "resuming", "resumes",
+        "restored", "restore", "restoring",
+        "safe passage", "safe transit",
+        "reopened", "reopen", "reopening",
+        "normal", "normaliz",
+        "cleared", "clear for",
+        "passage granted", "allowed through",
+        "ships passing", "vessels passing",
+        "transiting safely"
+    ]
+    
+    # Negative signals - ignore these
+    negative_keywords = [
+        "plan to", "planning", "hopes to", "hoping",
+        "may resume", "might resume", "could resume",
+        "historical", "previously", "in the past",
+        "seeks", "seeking", "urges", "calls for",
+        "trapped", "stuck", "blocked", "waiting"
+    ]
+    
+    # Check for positive signals
+    has_positive = any(keyword in text for keyword in positive_keywords)
+    
+    # Check for negative signals
+    has_negative = any(keyword in text for keyword in negative_keywords)
+    
+    # Relevant if positive signal and no negative signal
+    relevant = has_positive and not has_negative
+    
+    if relevant:
+        summary = "Article suggests shipping may have resumed or become safer through the strait"
+    else:
+        summary = "Article appears to be about negotiations, plans, or speculation rather than actual resumption"
+    
+    return {
+        "relevant": relevant,
+        "summary": summary
+    }
 
 
 def send_telegram(message: str) -> None:
     """Send a message via the Telegram Bot API."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(
+    response = requests.post(
         url,
         json={
             "chat_id": TELEGRAM_CHAT_ID,
@@ -131,6 +161,7 @@ def send_telegram(message: str) -> None:
         },
         timeout=15,
     )
+    print(f"[Telegram] Status: {response.status_code}, Response: {response.json()}")
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +172,9 @@ def send_telegram(message: str) -> None:
 def main() -> None:
     seen = load_seen()
     items = fetch_feed()
+    print(f"[RSS] Fetched {len(items)} items, {len(seen)} already seen")
 
+    sent_count = 0
     for item in items:
         link = item["link"]
 
@@ -150,12 +183,17 @@ def main() -> None:
             continue
         seen.add(link)
 
-        # Classify via Gemini
+        print(f"[New] {item['title'][:80]}...")
+
+        # Classify article
         try:
             result = classify(item["title"], item["snippet"])
-        except Exception:
+            print(f"[Classify] relevant={result.get('relevant')}, summary={result.get('summary', 'N/A')[:50]}...")
+        except Exception as e:
+            print(f"[Classify] Error: {e}")
             continue
 
+        # Only send if relevant
         if not isinstance(result, dict) or not result.get("relevant"):
             continue
 
@@ -168,10 +206,13 @@ def main() -> None:
         )
         try:
             send_telegram(message)
-        except Exception:
+            sent_count += 1
+        except Exception as e:
+            print(f"[Telegram] Error: {e}")
             continue
 
     save_seen(seen)
+    print(f"[Done] {len(seen)} total seen articles, {sent_count} alerts sent")
 
 
 if __name__ == "__main__":
