@@ -1,4 +1,24 @@
+# Secrets
 .env
+.env.*
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Runtime state (written by the monitor)
+seen_articles.json
+
+# OS
 .DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

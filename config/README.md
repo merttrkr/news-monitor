@@ -10,11 +10,13 @@ RSS feed configuration for Google News searches.
 
 ### `llm_config.py`
 LLM (Large Language Model) configuration for article classification.
-- `OLLAMA_API_URL`: Ollama API endpoint
-- `OLLAMA_MODEL`: Model name to use for classification
-- `OLLAMA_TEMPERATURE`: Temperature setting for LLM responses
-- `OLLAMA_TIMEOUT`: API request timeout in seconds
+- `GROQ_API_URL`: Groq API endpoint
+- `GROQ_MODEL`: Model name to use for classification
+- `LLM_TEMPERATURE`: Temperature setting for LLM responses
+- `LLM_TIMEOUT`: API request timeout in seconds
 - `CLASSIFICATION_PROMPT`: Template for the classification prompt
+- `CONFIDENCE_THRESHOLD`: Minimum confidence to trigger an alert
+- `RATE_LIMIT_DELAY`: Delay between API calls to avoid rate limits
 
 ### `keywords.py`
 Keyword filters for pre-screening articles before LLM analysis.
@@ -31,7 +33,7 @@ All configurations are imported in `monitor.py`:
 
 ```python
 from config.rss_config import RSS_URL
-from config.llm_config import OLLAMA_API_URL, OLLAMA_MODEL, ...
+from config.llm_config import GROQ_API_URL, GROQ_MODEL, ...
 from config.keywords import POSITIVE_KEYWORDS
 from config.message_templates import TELEGRAM_MESSAGE, LLM_FALLBACK_SUMMARY
 ```

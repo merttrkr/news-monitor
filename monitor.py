@@ -5,7 +5,6 @@ import feedparser
 import requests
 from dotenv import load_dotenv
 
-# Import configurations
 from config.rss_config import RSS_URL
 from config.llm_config import (
     GROQ_API_URL,
@@ -19,7 +18,6 @@ from config.llm_config import (
 from config.keywords import POSITIVE_KEYWORDS
 from config.message_templates import TELEGRAM_MESSAGE, LLM_FALLBACK_SUMMARY
 
-# Load environment variables from .env file
 load_dotenv()
 
 # ---------------------------------------------------------------------------
@@ -31,6 +29,13 @@ SEEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen_artic
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+if not all([GROQ_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
+    raise SystemExit(
+        "Missing required environment variables. "
+        "Set GROQ_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID "
+        "in a .env file or your environment."
+    )
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,18 +77,24 @@ def keyword_filter(title: str, snippet: str) -> bool:
     """Fast keyword-based pre-filter to reduce LLM calls."""
     text = f"{title} {snippet}".lower()
     
-    # Must have at least one positive keyword to be worth LLM analysis
     has_positive = any(keyword in text for keyword in POSITIVE_KEYWORDS)
     return has_positive
+
+
+def _sanitize_input(text: str, max_length: int = 500) -> str:
+    """Truncate and strip control characters from external input before LLM use."""
+    sanitized = "".join(ch for ch in text if ch.isprintable() or ch in ("\n", "\t"))
+    return sanitized[:max_length]
 
 
 def classify_with_llm(title: str, snippet: str) -> dict:
     """Use Groq API with LLaMA model for classification."""
     import requests
     
-    prompt = CLASSIFICATION_PROMPT.format(title=title, snippet=snippet)
+    safe_title = _sanitize_input(title, max_length=300)
+    safe_snippet = _sanitize_input(snippet, max_length=500)
+    prompt = CLASSIFICATION_PROMPT.format(title=safe_title, snippet=safe_snippet)
     
-    # Retry logic for rate limits
     max_retries = 3
     base_delay = 2  # seconds
     
@@ -111,13 +122,18 @@ def classify_with_llm(title: str, snippet: str) -> dict:
             response.raise_for_status()
             result_text = response.json()["choices"][0]["message"]["content"].strip()
             
-            # Extract JSON from response
             if "```json" in result_text:
                 result_text = result_text.split("```json")[1].split("```")[0].strip()
             elif "```" in result_text:
                 result_text = result_text.split("```")[1].split("```")[0].strip()
             
-            return json.loads(result_text)
+            parsed = json.loads(result_text)
+            conf = parsed.get("confidence")
+            if not isinstance(conf, (int, float)):
+                parsed["confidence"] = 0.0
+            else:
+                parsed["confidence"] = max(0.0, min(1.0, float(conf)))
+            return parsed
             
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 429:  # Rate limit
@@ -144,14 +160,12 @@ def classify_with_llm(title: str, snippet: str) -> dict:
 
 def classify(title: str, snippet: str) -> dict:
     """Two-stage classification: keyword filter + LLM."""
-    # Stage 1: Quick keyword filter
     if not keyword_filter(title, snippet):
         return {
             "confidence": 0.0,
             "summary": "No positive keywords found"
         }
     
-    # Stage 2: LLM classification for candidates
     print(f"[Classify] Keyword match - sending to LLM for analysis...")
     return classify_with_llm(title, snippet)
 
@@ -192,23 +206,19 @@ def main() -> None:
 
         print(f"[New] {item['title'][:80]}...")
 
-        # Classify article
         try:
             result = classify(item["title"], item["snippet"])
             confidence = result.get("confidence", 0.0)
             print(f"[Classify] confidence={confidence:.2f}, summary={result.get('summary', 'N/A')[:50]}...")
             
-            # Rate limiting: small delay between API calls
             time.sleep(RATE_LIMIT_DELAY)
         except Exception as e:
             print(f"[Classify] Error: {e}")
             continue
 
-        # Only send if confidence meets threshold
         if not isinstance(result, dict) or confidence < CONFIDENCE_THRESHOLD:
             continue
 
-        # Send Telegram alert
         message = TELEGRAM_MESSAGE.format(
             title=item["title"],
             confidence=f"{confidence * 100:.0f}",  # Convert to percentage
