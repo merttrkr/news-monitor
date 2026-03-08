@@ -42,19 +42,31 @@ if not all([GROQ_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
 # ---------------------------------------------------------------------------
 
 
-def load_seen() -> set:
-    """Load previously seen article URLs."""
+SEEN_TTL_SECONDS = 48 * 3600  # Prune entries older than 48 hours
+
+
+def load_seen() -> dict:
+    """Load previously seen article URLs with timestamps."""
     try:
         with open(SEEN_PATH, "r") as f:
-            return set(json.load(f))
+            data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return set()
+        data = {}
+
+    # Migrate from old flat-list format if needed
+    if isinstance(data, list):
+        now = time.time()
+        data = {url: now for url in data}
+
+    # Prune entries older than TTL
+    cutoff = time.time() - SEEN_TTL_SECONDS
+    return {url: ts for url, ts in data.items() if ts > cutoff}
 
 
-def save_seen(seen: set) -> None:
-    """Persist seen article URLs."""
+def save_seen(seen: dict) -> None:
+    """Persist seen article URLs with timestamps."""
     with open(SEEN_PATH, "w") as f:
-        json.dump(sorted(seen), f, indent=2)
+        json.dump(seen, f, indent=2)
 
 
 def fetch_feed() -> list[dict]:
@@ -202,7 +214,7 @@ def main() -> None:
         # Deduplicate
         if link in seen:
             continue
-        seen.add(link)
+        seen[link] = time.time()
 
         print(f"[New] {item['title'][:80]}...")
 
