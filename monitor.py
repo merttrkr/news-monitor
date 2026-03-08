@@ -24,16 +24,16 @@ load_dotenv()
 # Configuration
 # ---------------------------------------------------------------------------
 
-SEEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen_articles.json")
-
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+GH_TOKEN = os.environ.get("GH_TOKEN", "")
+GIST_ID = os.environ.get("GIST_ID", "")
 
-if not all([GROQ_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
+if not all([GROQ_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GH_TOKEN, GIST_ID]):
     raise SystemExit(
         "Missing required environment variables. "
-        "Set GROQ_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID "
+        "Set GROQ_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GH_TOKEN, and GIST_ID "
         "in a .env file or your environment."
     )
 
@@ -43,14 +43,31 @@ if not all([GROQ_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
 
 
 SEEN_TTL_SECONDS = 48 * 3600  # Prune entries older than 48 hours
+GIST_FILENAME = "seen_articles.json"
 
 
 def load_seen() -> dict:
-    """Load previously seen article URLs with timestamps."""
+    """Load previously seen article URLs with timestamps from GitHub Gist."""
     try:
-        with open(SEEN_PATH, "r") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        response = requests.get(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={
+                "Authorization": f"token {GH_TOKEN}",
+                "Accept": "application/vnd.github.v3+json"
+            },
+            timeout=15
+        )
+        response.raise_for_status()
+        
+        gist_data = response.json()
+        if GIST_FILENAME not in gist_data.get("files", {}):
+            print(f"[Gist] File '{GIST_FILENAME}' not found in Gist, starting fresh")
+            data = {}
+        else:
+            content = gist_data["files"][GIST_FILENAME]["content"]
+            data = json.loads(content)
+    except Exception as e:
+        print(f"[Gist] Error loading from Gist: {e}, starting fresh")
         data = {}
 
     # Migrate from old flat-list format if needed
@@ -64,9 +81,27 @@ def load_seen() -> dict:
 
 
 def save_seen(seen: dict) -> None:
-    """Persist seen article URLs with timestamps."""
-    with open(SEEN_PATH, "w") as f:
-        json.dump(seen, f, indent=2)
+    """Persist seen article URLs with timestamps to GitHub Gist."""
+    try:
+        response = requests.patch(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={
+                "Authorization": f"token {GH_TOKEN}",
+                "Accept": "application/vnd.github.v3+json"
+            },
+            json={
+                "files": {
+                    GIST_FILENAME: {
+                        "content": json.dumps(seen, indent=2)
+                    }
+                }
+            },
+            timeout=15
+        )
+        response.raise_for_status()
+        print(f"[Gist] Successfully saved {len(seen)} entries to Gist")
+    except Exception as e:
+        print(f"[Gist] Error saving to Gist: {e}")
 
 
 def fetch_feed() -> list[dict]:

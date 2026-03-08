@@ -8,6 +8,8 @@ Automated monitoring for Strait of Hormuz news using RSS feeds, LLM-powered clas
 - Python 3.8 or higher
 - Groq API key ([Get one here](https://groq.com))
 - Telegram bot token and chat ID ([Create a bot](https://core.telegram.org/bots/tutorial))
+- GitHub personal access token with `gist` scope ([Create token](https://github.com/settings/tokens))
+- GitHub Gist ID (create a new gist at [gist.github.com](https://gist.github.com) with a file named `seen_articles.json`)
 
 ### Fast Start
 
@@ -28,6 +30,8 @@ cp .env.example .env
 # - GROQ_API_KEY
 # - TELEGRAM_BOT_TOKEN
 # - TELEGRAM_CHAT_ID
+# - GH_TOKEN
+# - GIST_ID
 
 # 5. Run the monitor
 python monitor.py
@@ -41,6 +45,8 @@ Before running, ensure your `.env` file contains:
 GROQ_API_KEY=your_groq_api_key_here
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 TELEGRAM_CHAT_ID=your_telegram_chat_id_here
+GH_TOKEN=your_github_personal_access_token_here
+GIST_ID=your_gist_id_here
 ```
 
 ### Test Run
@@ -93,13 +99,16 @@ You can modify any of the config files to customize the behavior of the monitor 
 
 ```
 hormuz-monitor/
-├── monitor.py              # Main application script
-├── test_llm.py            # LLM testing utility
-├── requirements.txt       # Python dependencies
-├── .env.example          # Example environment variables
-├── seen_articles.json    # Tracks processed articles
 └── config/               # Configuration files
     ├── rss_config.py
+    ├── llm_config.py
+    ├── keywords.py
+    └── message_templates.py
+```
+
+## Storage
+
+The monitor uses a GitHub Gist to track previously seen articles, preventing duplicate notifications. The Gist stores article URLs with timestamps and automatically prunes entries older than 48 hours. ├── rss_config.py
     ├── llm_config.py
     ├── keywords.py
     └── message_templates.py

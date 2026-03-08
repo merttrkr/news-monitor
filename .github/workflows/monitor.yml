@@ -5,9 +5,6 @@ on:
     - cron: "*/10 * * * *"
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 concurrency:
   group: monitor
   cancel-in-progress: false
@@ -33,13 +30,6 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
         run: python monitor.py
-
-      - name: Commit updated seen_articles.json
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f seen_articles.json
-          git diff --cached --quiet || git commit -m "chore: update seen_articles.json"
-          git pull --rebase origin main
-          git push
