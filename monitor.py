@@ -1,8 +1,23 @@
 import os
 import json
+import time
 import feedparser
 import requests
 from dotenv import load_dotenv
+
+# Import configurations
+from config.rss_config import RSS_URL
+from config.llm_config import (
+    GROQ_API_URL,
+    GROQ_MODEL,
+    LLM_TEMPERATURE,
+    LLM_TIMEOUT,
+    CLASSIFICATION_PROMPT,
+    CONFIDENCE_THRESHOLD,
+    RATE_LIMIT_DELAY,
+)
+from config.keywords import POSITIVE_KEYWORDS
+from config.message_templates import TELEGRAM_MESSAGE, LLM_FALLBACK_SUMMARY
 
 # Load environment variables from .env file
 load_dotenv()
@@ -11,61 +26,11 @@ load_dotenv()
 # Configuration
 # ---------------------------------------------------------------------------
 
-RSS_URL = (
-    "https://news.google.com/rss/search?"
-    "q=%22Strait+of+Hormuz%22+"
-    "%22shipping+resumes%22+OR+%22transit+resumes%22+OR+"
-    "%22safe+passage%22+OR+%22shipping+restored%22+OR+"
-    "%22normal+transit%22+OR+%22navigation+restored%22"
-    "&hl=en-US&gl=US&ceid=US:en"
-)
-
 SEEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen_articles.json")
 
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-CLASSIFICATION_PROMPT = """\
-You are a geopolitical news classifier.
-
-Determine whether this article indicates that commercial shipping
-through the Strait of Hormuz has resumed or become safe again.
-
-Return ONLY valid JSON:
-
-{{
- "relevant": true or false,
- "summary": "one short sentence explaining the signal"
-}}
-
-Article headline:
-{title}
-
-Snippet:
-{snippet}
-
-Rules
-- Ignore speculation
-- Ignore historical discussion
-- Ignore unrelated naval activity
-- Only mark relevant if the article strongly suggests shipping has resumed or become safe
-"""
-
-TELEGRAM_MSG = """\
-🚢 Strait of Hormuz Shipping Update
-
-Headline:
-{title}
-
-Summary:
-{summary}
-
-Source:
-{link}
-
-Time:
-{published}
-"""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -107,68 +72,82 @@ def keyword_filter(title: str, snippet: str) -> bool:
     """Fast keyword-based pre-filter to reduce LLM calls."""
     text = f"{title} {snippet}".lower()
     
-    # Positive signals - shipping resuming or becoming safe
-    positive_keywords = [
-        "resume", "resumed", "resuming", "resumes",
-        "restored", "restore", "restoring",
-        "safe passage", "safe transit",
-        "reopened", "reopen", "reopening",
-        "normal", "normaliz",
-        "cleared", "clear for",
-        "passage granted", "allowed through",
-        "ships passing", "vessels passing",
-        "transiting safely"
-    ]
-    
     # Must have at least one positive keyword to be worth LLM analysis
-    has_positive = any(keyword in text for keyword in positive_keywords)
+    has_positive = any(keyword in text for keyword in POSITIVE_KEYWORDS)
     return has_positive
 
 
-def classify_with_llm(title: str, snippet: str) -> dict | None:
-    """Use local Ollama model for classification."""
+def classify_with_llm(title: str, snippet: str) -> dict:
+    """Use Groq API with LLaMA model for classification."""
     import requests
     
     prompt = CLASSIFICATION_PROMPT.format(title=title, snippet=snippet)
     
-    try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "llama3.2:3b",  # Use your local 8b model
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Low temperature for consistent output
-                }
-            },
-            timeout=30
-        )
-        response.raise_for_status()
-        result_text = response.json()["response"].strip()
-        
-        # Extract JSON from response
-        if "```json" in result_text:
-            result_text = result_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in result_text:
-            result_text = result_text.split("```")[1].split("```")[0].strip()
-        
-        return json.loads(result_text)
-    except Exception as e:
-        print(f"[LLM] Error calling Ollama: {e}")
-        # Fallback to simple classification
-        return {
-            "relevant": True,  # If keyword matched, assume relevant
-            "summary": "Potential shipping resumption (LLM unavailable)"
-        }
+    # Retry logic for rate limits
+    max_retries = 3
+    base_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                GROQ_API_URL,
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    "temperature": LLM_TEMPERATURE,
+                    "max_tokens": 200
+                },
+                timeout=LLM_TIMEOUT
+            )
+            response.raise_for_status()
+            result_text = response.json()["choices"][0]["message"]["content"].strip()
+            
+            # Extract JSON from response
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0].strip()
+            
+            return json.loads(result_text)
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:  # Rate limit
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    print(f"[LLM] Rate limited. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"[LLM] Rate limit exceeded after {max_retries} attempts")
+            else:
+                print(f"[LLM] HTTP Error calling Groq API: {e}")
+            break
+        except Exception as e:
+            print(f"[LLM] Error calling Groq API: {e}")
+            break
+    
+    # Fallback to simple classification
+    return {
+        "confidence": 0.6,  # If keyword matched, assume moderate confidence
+        "summary": LLM_FALLBACK_SUMMARY
+    }
 
 
-def classify(title: str, snippet: str) -> dict | None:
+def classify(title: str, snippet: str) -> dict:
     """Two-stage classification: keyword filter + LLM."""
     # Stage 1: Quick keyword filter
     if not keyword_filter(title, snippet):
         return {
-            "relevant": False,
+            "confidence": 0.0,
             "summary": "No positive keywords found"
         }
     
@@ -216,18 +195,23 @@ def main() -> None:
         # Classify article
         try:
             result = classify(item["title"], item["snippet"])
-            print(f"[Classify] relevant={result.get('relevant')}, summary={result.get('summary', 'N/A')[:50]}...")
+            confidence = result.get("confidence", 0.0)
+            print(f"[Classify] confidence={confidence:.2f}, summary={result.get('summary', 'N/A')[:50]}...")
+            
+            # Rate limiting: small delay between API calls
+            time.sleep(RATE_LIMIT_DELAY)
         except Exception as e:
             print(f"[Classify] Error: {e}")
             continue
 
-        # Only send if relevant
-        if not isinstance(result, dict) or not result.get("relevant"):
+        # Only send if confidence meets threshold
+        if not isinstance(result, dict) or confidence < CONFIDENCE_THRESHOLD:
             continue
 
         # Send Telegram alert
-        message = TELEGRAM_MSG.format(
+        message = TELEGRAM_MESSAGE.format(
             title=item["title"],
+            confidence=f"{confidence * 100:.0f}",  # Convert to percentage
             summary=result.get("summary", "N/A"),
             link=item["link"],
             published=item["published"],
