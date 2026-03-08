@@ -1,6 +1,6 @@
 # Hormuz Monitor
 
-Automated monitoring for Strait of Hormuz news using RSS feeds, LLM-powered classification, and Telegram notifications.
+Free Automated monitoring for Strait of Hormuz news using RSS feeds, LLM-powered classification, and Telegram notifications.
 
 ## Quick Setup for Local Testing
 
